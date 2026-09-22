@@ -557,7 +557,7 @@ class SessionSequenceTest {
             """.trimIndent()
         }
 
-        val ref = "2"
+        val ref = "1"
 
         // no -o: the resource itself is the output, the way `dump` prints the
         // page. A CSV is text, so it lands in the caller's context as the text
