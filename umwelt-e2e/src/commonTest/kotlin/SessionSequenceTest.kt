@@ -67,9 +67,12 @@ class SessionSequenceTest {
     }
 
     /**
-     * The search page exactly as an agent perceives it. Asserted before and
-     * after each act, which is what makes "re-perceive between mutations"
-     * visible: the point is that these three dumps are the *same*.
+     * The search page exactly as an agent perceives it, in the state its
+     * controls are in *now*: the text typed into the query field and the
+     * option chosen (the first one until the agent picks another, since that
+     * is what the form would submit). Asserted before and after each act, which
+     * is what makes "re-perceive between mutations" visible: each dump shows
+     * the act that preceded it, while the refs stay the ones just read.
      *
      * The `<option>`s are part of that perception, not noise to trim: SKILL.md
      * tells an agent that `select` matches the visible label first, so the
@@ -81,7 +84,10 @@ class SessionSequenceTest {
      */
     @Language("markdown")
     @Suppress("HtmlUnknownAttribute")
-    private val searchPage = """
+    private fun searchPage(
+        query: String? = null,
+        documents: Boolean = false,
+    ) = """
         ---
         lang: en
         title: Search
@@ -91,14 +97,14 @@ class SessionSequenceTest {
         # Search
         
         <form action="/results" method="get">
-        <input id="q" type="text" name="q" aria-label="query" ref="1">
+        <input id="q" type="text" name="q"${query?.let { " value=\"$it\"" } ?: ""} aria-label="query" ref="1">
         <select id="kind" name="kind" aria-label="kind" ref="2">
-        <option value="all" ref="3">
+        <option value="all"${if (documents) "" else " selected=\"\""} ref="3">
         
         Everything
         
         </option>
-        <option value="docs" ref="4">
+        <option value="docs"${if (documents) " selected=\"\"" else ""} ref="4">
         
         Documents
         
@@ -119,7 +125,9 @@ class SessionSequenceTest {
             out sameAsJson """
                 {
                   "type": "SessionOpened",
-                  "sessionId": "$sessionId"
+                  "sessionId": "$sessionId",
+                  "profile": "e2e",
+                  "ephemeral": false
                 }
             """.trimIndent()
         }
@@ -145,7 +153,7 @@ class SessionSequenceTest {
 
         cli.umwelt("--api-base=$daemonUrl dump -s $sid") should {
             have(exitCode == 0)
-            out sameAs searchPage
+            out sameAs searchPage()
         }
 
         // an act that produces nothing to report still reports itself: the
@@ -160,10 +168,11 @@ class SessionSequenceTest {
             """.trimIndent()
         }
 
-        // re-perceive before every act, and the refs stay the ones just read
+        // re-perceive before every act: the dump shows what was typed, and the
+        // refs stay the ones just read
         cli.umwelt("--api-base=$daemonUrl dump -s $sid") should {
             have(exitCode == 0)
-            out sameAs searchPage
+            out sameAs searchPage(query = "umwelt")
         }
 
         cli.umwelt("""--api-base=$daemonUrl select -s $sid 2 "Documents"""") should { // ref 2 = select
@@ -178,7 +187,7 @@ class SessionSequenceTest {
 
         cli.umwelt("--api-base=$daemonUrl dump -s $sid") should {
             have(exitCode == 0)
-            out sameAs searchPage
+            out sameAs searchPage(query = "umwelt", documents = true)
         }
 
         cli.umwelt("--api-base=$daemonUrl click -s $sid 5") should { // ref 5 = submit
@@ -227,7 +236,9 @@ class SessionSequenceTest {
                   "type": "SessionsClosed",
                   "closed": [
                     {
-                      "id": "$sid"
+                      "id": "$sid",
+                      "profile": "e2e",
+                      "ephemeral": false
                     }
                   ]
                 }
@@ -399,6 +410,66 @@ class SessionSequenceTest {
         }
     }
 
+    /**
+     * The other side of the line the 404 sequence draws: a page that never
+     * *finishes* loading still loaded. Its document arrived at once, and only
+     * a subresource hangs, so `document.readyState` never reaches `complete`
+     * and the settle wait gives up on it.
+     *
+     * That giving up used to escape as an untyped failure *after* the
+     * navigation had happened: the caller got exit `1` and `answered 502 Bad
+     * Gateway`, the session recorded no page (so the next `status` said it had
+     * never navigated), and an agent would retry — a click that had already
+     * gone through, which is what made it dangerous. It surfaced on a Wayback
+     * Machine capture, whose toolbar assets can hang the same way.
+     *
+     * Slower than the other sequences by the settle cap (15 s), since waiting
+     * the cap out is the behaviour under test.
+     */
+    @Test
+    fun `should settle on a page that never finishes loading`() = runTest {
+
+        val sid = (cli.umwelt("--api-base=$daemonUrl session new") should { have(exitCode == 0) }).sessionId
+
+        cli.umwelt("--api-base=$daemonUrl goto -s $sid $site/stalled.html") should {
+            have(exitCode == 0)
+            out sameAsJson """
+                {
+                  "type": "Navigation",
+                  "navigation": {
+                    "url": "$site/stalled.html",
+                    "status": 200,
+                    "title": "Stalled",
+                    "mimeType": "text/html",
+                    "type": "DOCUMENT",
+                    "canGoBack": false,
+                    "canGoForward": false
+                  }
+                }
+            """.trimIndent()
+        }
+
+        // the session recorded the page: this is what answered NoCurrentPage
+        cli.umwelt("--api-base=$daemonUrl dump -s $sid") should {
+            have(exitCode == 0)
+            @Suppress("WrsUnresolvedAnchorReference", "MarkdownUnresolvedFileReference")
+            out sameAsMarkdown """
+                ---
+                lang: en
+                title: Stalled
+                status: 200
+                ---
+                
+                # Stalled
+                
+                The text is here; one image never arrives.
+                
+                ![never arrives](/stalled.png)
+                
+            """.trimIndent()
+        }
+    }
+
     @Test
     fun `should fail a navigation that loads no document at all`() = runTest {
 
@@ -511,10 +582,9 @@ class SessionSequenceTest {
         """.trimIndent()
 
         // SKILL.md names `status`, `reload` and `dump` as the three that fail
-        // here with "the session has not navigated to any page yet".
-        //
-        // FAILS TODAY for `dump` alone: an agent that forgot to `goto` is told
-        // the page is blank rather than that it has no page.
+        // here with "the session has not navigated to any page yet" — `dump`
+        // included, so an agent that forgot to `goto` is told it has no page
+        // rather than that the page is blank.
         cli.umwelt("--api-base=$daemonUrl dump -s $sid") should {
             have(exitCode == 1)
             out sameAsJson noCurrentPage
@@ -616,6 +686,24 @@ class SessionSequenceTest {
     }
 
     @Test
+    fun `should download a page as the source the origin sent`() = runTest {
+
+        val sid = (cli.umwelt("--api-base=$daemonUrl session new") should { have(exitCode == 0) }).sessionId
+        cli.umwelt("--api-base=$daemonUrl goto -s $sid $site/article.html") should { have(exitCode == 0) }
+
+        // a download is a fetch, not a navigation: an HTML page comes back as
+        // the origin served it - what `curl` would see, with the session's
+        // browser state - and no script on it has run. The fixture's sentence
+        // exists only in the live DOM, so its absence here is the proof; the
+        // page as the browser built it is what `dump` and `events` are for
+        cli.umwelt("--api-base=$daemonUrl download -s $sid --url /scripted.html") should {
+            have(exitCode == 0)
+            out sameAs FixtureSite.SCRIPTED_HTML
+            have(bytes.isEmpty())
+        }
+    }
+
+    @Test
     fun `should refuse to click a link that starts a download`() = runTest {
 
         val sid = (cli.umwelt("--api-base=$daemonUrl session new") should { have(exitCode == 0) }).sessionId
@@ -697,10 +785,14 @@ class SessionSequenceTest {
                   "type": "SessionList",
                   "sessions": [
                     {
-                      "id": "${first.sessionId}"
+                      "id": "${first.sessionId}",
+                      "profile": "e2e",
+                      "ephemeral": false
                     },
                     {
-                      "id": "${second.sessionId}"
+                      "id": "${second.sessionId}",
+                      "profile": "e2e",
+                      "ephemeral": false
                     }
                   ]
                 }
@@ -716,10 +808,14 @@ class SessionSequenceTest {
                   "type": "SessionsClosed",
                   "closed": [
                     {
-                      "id": "${first.sessionId}"
+                      "id": "${first.sessionId}",
+                      "profile": "e2e",
+                      "ephemeral": false
                     },
                     {
-                      "id": "${second.sessionId}"
+                      "id": "${second.sessionId}",
+                      "profile": "e2e",
+                      "ephemeral": false
                     }
                   ]
                 }
