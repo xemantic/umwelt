@@ -167,7 +167,20 @@ class HandoffSequenceTest {
         // tab: no navigation, no history entry, and every ref stays valid.
         cli.umwelt("--api-base=$daemonUrl status -s $sid") should {
             have(exitCode == 0)
-            have("$site/article.html" in out)
+            out sameAsJson """
+                {
+                  "type": "Navigation",
+                  "navigation": {
+                    "url": "$site/article.html",
+                    "status": 200,
+                    "title": "The Article",
+                    "mimeType": "text/html",
+                    "type": "DOCUMENT",
+                    "canGoBack": false,
+                    "canGoForward": false
+                  }
+                }
+            """.trimIndent()
         }
     }
 

@@ -22,6 +22,7 @@ import com.xemantic.kotlin.test.assert
 import com.xemantic.kotlin.test.have
 import com.xemantic.kotlin.test.sameAs
 import com.xemantic.kotlin.test.sameAsJson
+import com.xemantic.kotlin.test.sameAsMarkdown
 import com.xemantic.kotlin.test.should
 import com.xemantic.umwelt.e2e.harness.FixtureSite
 import com.xemantic.umwelt.e2e.harness.UmweltCli
@@ -52,7 +53,9 @@ import kotlin.test.Test
  *
  * The sequences in the other files show the shapes in use; this file covers the
  * corners they do not reach — the `-o -` payloads that leave no room for a
- * record at all, the CLI's own failures, and the daemon it cannot reach.
+ * record at all, the `-o <file>` record of each kind of payload, the CLI's own
+ * failures, a session id that is not one, a stream that fails before it
+ * starts, and the daemon it cannot reach.
  */
 class ResponseShapeTest {
 
@@ -125,8 +128,7 @@ class ResponseShapeTest {
             have(exitCode == 0)
             have(out.isEmpty())
             // a real PNG on the byte stream, not an empty one
-            have(bytes.isNotEmpty())
-            have(bytes[0] == 0x89.toByte())
+            have(bytes.startsWith(PNG_SIGNATURE))
         }
     }
 
@@ -140,11 +142,9 @@ class ResponseShapeTest {
 
         val shot = cli.umwelt("""--api-base=$daemonUrl screenshot -s $sid -o "$target"""")
 
-        // the first byte of a PNG signature, so the record is not describing an
-        // empty file
+        // a PNG signature, so the record is not describing an empty file
         val bytes = target.readBytes()
-        assert(bytes.isNotEmpty())
-        assert(bytes[0] == 0x89.toByte())
+        assert(bytes.startsWith(PNG_SIGNATURE))
 
         // the size cannot be known in advance, but it can be held to the file
         // the record describes
@@ -175,7 +175,8 @@ class ResponseShapeTest {
         // rather than the document — the same swap `read -o` makes
         val dump = cli.umwelt("""--api-base=$daemonUrl dump -s $sid -o "$target"""")
         val bytes = target.readBytes()
-        assert("Umwelt is the world" in bytes.decodeToString())
+        // the file holds exactly the Markdown stdout would have carried
+        bytes.decodeToString() sameAsMarkdown ARTICLE_DUMP
         dump should {
             have(exitCode == 0)
             out sameAsJson """
@@ -201,43 +202,66 @@ class ResponseShapeTest {
         // page's DOM as captured, refs included, before any Markdown rendering
         cli.umwelt("--api-base=$daemonUrl events -s $sid") should {
             have(exitCode == 0)
-            out sameAs /* language=ndjson */ """
-                {"type":"mark","name":"html","tagged":true,"attributes":{"lang":"en"}}
-                {"type":"mark","name":"head","tagged":true}
-                {"type":"mark","name":"meta","tagged":true,"attributes":{"charset":"utf-8"}}
-                {"type":"unmark","name":"meta","tagged":true}
-                {"type":"mark","name":"title","tagged":true}
-                {"type":"text","text":"The Article"}
-                {"type":"unmark","name":"title","tagged":true}
-                {"type":"unmark","name":"head","tagged":true}
-                {"type":"text","text":"\n    "}
-                {"type":"mark","name":"body","tagged":true}
-                {"type":"text","text":"\n    "}
-                {"type":"mark","name":"h1","tagged":true}
-                {"type":"text","text":"The Article"}
-                {"type":"unmark","name":"h1","tagged":true}
-                {"type":"text","text":"\n"}
-                {"type":"mark","name":"p","tagged":true}
-                {"type":"text","text":"Umwelt is the world as an organism perceives it."}
-                {"type":"unmark","name":"p","tagged":true}
-                {"type":"text","text":"\n"}
-                {"type":"mark","name":"p","tagged":true}
-                {"type":"mark","name":"a","tagged":true,"attributes":{"href":"/report.csv","data-markanywhere-ref":"1","data-markanywhere-display":"inline"}}
-                {"type":"text","text":"the report as data"}
-                {"type":"unmark","name":"a","tagged":true}
-                {"type":"unmark","name":"p","tagged":true}
-                {"type":"text","text":"\n"}
-                {"type":"mark","name":"p","tagged":true}
-                {"type":"mark","name":"a","tagged":true,"attributes":{"href":"/attachment.csv","download":"","data-markanywhere-ref":"2","data-markanywhere-display":"inline"}}
-                {"type":"text","text":"download the table"}
-                {"type":"unmark","name":"a","tagged":true}
-                {"type":"unmark","name":"p","tagged":true}
-                {"type":"text","text":"\n    \n    "}
-                {"type":"unmark","name":"body","tagged":true}
-                {"type":"unmark","name":"html","tagged":true}
-                
+            out sameAs ARTICLE_EVENTS
+        }
+    }
+
+    @Test
+    fun `should print a record when the semantic events go to a file`() = runTest {
+
+        val target = tempPath("umwelt-events", ".ndjson")
+
+        val sid = (cli.umwelt("--api-base=$daemonUrl session new") should { have(exitCode == 0) }).sessionId
+        cli.umwelt("--api-base=$daemonUrl goto -s $sid $site/article.html") should { have(exitCode == 0) }
+
+        // the same swap `dump -o` makes, for the other document command
+        val events = cli.umwelt("""--api-base=$daemonUrl events -s $sid -o "$target"""")
+        val bytes = target.readBytes()
+        bytes.decodeToString() sameAs ARTICLE_EVENTS
+        events should {
+            have(exitCode == 0)
+            out sameAsJson """
+                {
+                  "type": "FileWritten",
+                  "file": "$target",
+                  "bytes": ${bytes.size}
+                }
             """.trimIndent()
         }
+
+        target.deleteIfExists()
+    }
+
+    @Test
+    fun `should print a record when a lossy full page screenshot goes to a file`() = runTest {
+
+        val target = tempPath("umwelt-shot", ".jpeg")
+
+        val sid = (cli.umwelt("--api-base=$daemonUrl session new") should { have(exitCode == 0) }).sessionId
+        cli.umwelt("--api-base=$daemonUrl goto -s $sid $site/article.html") should { have(exitCode == 0) }
+
+        val shot = cli.umwelt(
+            """--api-base=$daemonUrl screenshot -s $sid --format jpeg --quality 50 --full-page -o "$target""""
+        )
+
+        // the encoding asked for is the encoding written, and the record says
+        // which: a JPEG starts with its SOI marker
+        val bytes = target.readBytes()
+        assert(bytes.startsWith(JPEG_SIGNATURE))
+
+        shot should {
+            have(exitCode == 0)
+            out sameAsJson """
+                {
+                  "type": "ScreenshotSaved",
+                  "format": "jpeg",
+                  "file": "$target",
+                  "bytes": ${bytes.size}
+                }
+            """.trimIndent()
+        }
+
+        target.deleteIfExists()
     }
 
     @Test
@@ -281,6 +305,26 @@ class ResponseShapeTest {
     }
 
     @Test
+    fun `should report a missing session as a record rather than a usage dump`() = runTest {
+
+        // the mistake an agent is likeliest to make: there is no remembered
+        // session to fall back on, so forgetting `-s` must say which option is
+        // missing — a Clikt usage error carries no `message` of its own, and
+        // reading it naively reported this as an empty string
+        cli.umwelt("--api-base=$daemonUrl dump") should {
+            have(exitCode == 1)
+            out sameAsJson """
+                {
+                  "type": "Error",
+                  "code": 1,
+                  "message": "missing option --session",
+                  "error": null
+                }
+            """.trimIndent()
+        }
+    }
+
+    @Test
     fun `should report an unreachable daemon with its own exit code`() = runTest {
 
         // a later --api-base wins over the one the harness pins, so this run
@@ -312,7 +356,7 @@ class ResponseShapeTest {
         // arrived, which is the whole rule this file exists to pin.
         val unknown = "3f2504e0-4f89-11d3-9a0c-0305e82c3301"
         cli.umwelt("--api-base=$daemonUrl dump -s $unknown") should {
-            have(exitCode != 0)
+            have(exitCode == 1)
             out sameAsJson """
                 {
                   "type": "Error",
@@ -328,23 +372,141 @@ class ResponseShapeTest {
         }
     }
 
+    /**
+     * The same rule for `events`, which reaches the daemon on its own path — a
+     * raw NDJSON stream rather than a resolved session — and so has its own
+     * way to get it wrong: a stream whose failure arrives after a `200` header
+     * would reach the caller as a truncated document with exit `0`.
+     */
     @Test
-    fun `should name every response type even when the result is one id`() = runTest {
+    fun `should write an error record where an event stream would have gone`() = runTest {
 
-        // `session new` is the command whose whole result is an id, and it still
-        // arrives as a named object rather than a bare string
-        cli.umwelt("--api-base=$daemonUrl session new") should {
-            have(exitCode == 0)
-            have(sessionId.isNotBlank())
+        val unknown = "3f2504e0-4f89-11d3-9a0c-0305e82c3301"
+        cli.umwelt("--api-base=$daemonUrl events -s $unknown") should {
+            have(exitCode == 1)
             out sameAsJson """
                 {
-                  "type": "SessionOpened",
-                  "sessionId": "$sessionId",
-                  "profile": "e2e",
-                  "ephemeral": false
+                  "type": "Error",
+                  "code": 1,
+                  "message": "no session with id '$unknown'",
+                  "error": {
+                    "type": "SessionNotFound",
+                    "id": "$unknown",
+                    "message": "no session with id '$unknown'"
+                  }
+                }
+            """.trimIndent()
+        }
+
+        // a session that exists but has no page: the precondition is checked
+        // before the stream starts, never from inside it
+        val sid = (cli.umwelt("--api-base=$daemonUrl session new") should { have(exitCode == 0) }).sessionId
+        cli.umwelt("--api-base=$daemonUrl events -s $sid") should {
+            have(exitCode == 1)
+            out sameAsJson """
+                {
+                  "type": "Error",
+                  "code": 1,
+                  "message": "the session has not navigated to any page yet",
+                  "error": {
+                    "type": "NoCurrentPage",
+                    "message": "the session has not navigated to any page yet"
+                  }
                 }
             """.trimIndent()
         }
     }
 
+    @Test
+    fun `should report a session id that is not one as a typed error`() = runTest {
+
+        // not a UUID at all: the daemon refuses to look it up, and says what
+        // it was given
+        cli.umwelt("--api-base=$daemonUrl status -s not-a-session") should {
+            have(exitCode == 1)
+            out sameAsJson """
+                {
+                  "type": "Error",
+                  "code": 1,
+                  "message": "invalid session id 'not-a-session'",
+                  "error": {
+                    "type": "InvalidSessionId",
+                    "idText": "not-a-session",
+                    "message": "invalid session id 'not-a-session'"
+                  }
+                }
+            """.trimIndent()
+        }
+    }
+
+    private companion object {
+
+        val PNG_SIGNATURE = byteArrayOf(
+            0x89.toByte(), 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A
+        )
+
+        val JPEG_SIGNATURE = byteArrayOf(0xFF.toByte(), 0xD8.toByte(), 0xFF.toByte())
+
+        /** The article as `dump` renders it, refs included. */
+        @Suppress("MarkdownUnresolvedFileReference")
+        val ARTICLE_DUMP = /* language=markdown */ """
+            ---
+            lang: en
+            title: The Article
+            status: 200
+            ---
+            
+            # The Article
+            
+            Umwelt is the world as an organism perceives it.
+            
+            [the report as data](ref:1:/report.csv)
+            
+            [download the table](ref:2:/attachment.csv)
+            
+        """.trimIndent()
+
+        /** The article as `events` relays it: the DOM as captured, one event per line. */
+        val ARTICLE_EVENTS = /* language=ndjson */ """
+            {"type":"mark","name":"html","tagged":true,"attributes":{"lang":"en"}}
+            {"type":"mark","name":"head","tagged":true}
+            {"type":"mark","name":"meta","tagged":true,"attributes":{"charset":"utf-8"}}
+            {"type":"unmark","name":"meta","tagged":true}
+            {"type":"mark","name":"title","tagged":true}
+            {"type":"text","text":"The Article"}
+            {"type":"unmark","name":"title","tagged":true}
+            {"type":"unmark","name":"head","tagged":true}
+            {"type":"text","text":"\n    "}
+            {"type":"mark","name":"body","tagged":true}
+            {"type":"text","text":"\n    "}
+            {"type":"mark","name":"h1","tagged":true}
+            {"type":"text","text":"The Article"}
+            {"type":"unmark","name":"h1","tagged":true}
+            {"type":"text","text":"\n"}
+            {"type":"mark","name":"p","tagged":true}
+            {"type":"text","text":"Umwelt is the world as an organism perceives it."}
+            {"type":"unmark","name":"p","tagged":true}
+            {"type":"text","text":"\n"}
+            {"type":"mark","name":"p","tagged":true}
+            {"type":"mark","name":"a","tagged":true,"attributes":{"href":"/report.csv","data-markanywhere-ref":"1","data-markanywhere-display":"inline"}}
+            {"type":"text","text":"the report as data"}
+            {"type":"unmark","name":"a","tagged":true}
+            {"type":"unmark","name":"p","tagged":true}
+            {"type":"text","text":"\n"}
+            {"type":"mark","name":"p","tagged":true}
+            {"type":"mark","name":"a","tagged":true,"attributes":{"href":"/attachment.csv","download":"","data-markanywhere-ref":"2","data-markanywhere-display":"inline"}}
+            {"type":"text","text":"download the table"}
+            {"type":"unmark","name":"a","tagged":true}
+            {"type":"unmark","name":"p","tagged":true}
+            {"type":"text","text":"\n    \n    "}
+            {"type":"unmark","name":"body","tagged":true}
+            {"type":"unmark","name":"html","tagged":true}
+            
+        """.trimIndent()
+
+    }
+
 }
+
+private fun ByteArray.startsWith(prefix: ByteArray): Boolean =
+    size >= prefix.size && prefix.indices.all { this[it] == prefix[it] }

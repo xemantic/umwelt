@@ -29,8 +29,10 @@ import com.xemantic.umwelt.e2e.harness.UmweltCli
 import com.xemantic.umwelt.e2e.harness.UmweltUnderTest
 import com.xemantic.umwelt.e2e.harness.deleteIfExists
 import com.xemantic.umwelt.e2e.harness.linkRef
+import com.xemantic.umwelt.e2e.harness.tagRef
 import com.xemantic.umwelt.e2e.harness.readText
 import com.xemantic.umwelt.e2e.harness.tempPath
+import com.xemantic.umwelt.e2e.harness.visitsPage
 import kotlinx.coroutines.test.runTest
 import org.intellij.lang.annotations.Language
 import kotlin.test.AfterTest
@@ -151,19 +153,25 @@ class SessionSequenceTest {
             """.trimIndent()
         }
 
-        cli.umwelt("--api-base=$daemonUrl dump -s $sid") should {
+        val form = cli.umwelt("--api-base=$daemonUrl dump -s $sid")
+        form should {
             have(exitCode == 0)
             out sameAs searchPage()
         }
+        // read out of the dump, the way an agent finds them: by what each
+        // control says it is, never by the number it happened to get
+        val query = form.out.tagRef("aria-label=\"query\"")
+        val kind = form.out.tagRef("aria-label=\"kind\"")
+        val submit = form.out.tagRef("value=\"Search\"")
 
         // an act that produces nothing to report still reports itself: the
         // response names what was done, so no invocation prints an empty stdout
-        cli.umwelt("""--api-base=$daemonUrl type -s $sid 1 "umwelt"""") should { // ref 1 = input
+        cli.umwelt("""--api-base=$daemonUrl type -s $sid $query "umwelt"""") should {
             have(exitCode == 0)
             out sameAsJson """
                 {
                   "type": "Typed",
-                  "ref": "1"
+                  "ref": "$query"
                 }
             """.trimIndent()
         }
@@ -175,12 +183,12 @@ class SessionSequenceTest {
             out sameAs searchPage(query = "umwelt")
         }
 
-        cli.umwelt("""--api-base=$daemonUrl select -s $sid 2 "Documents"""") should { // ref 2 = select
+        cli.umwelt("""--api-base=$daemonUrl select -s $sid $kind "Documents"""") should {
             have(exitCode == 0)
             out sameAsJson """
                 {
                   "type": "Selected",
-                  "ref": "2"
+                  "ref": "$kind"
                 }
             """.trimIndent()
         }
@@ -190,7 +198,7 @@ class SessionSequenceTest {
             out sameAs searchPage(query = "umwelt", documents = true)
         }
 
-        cli.umwelt("--api-base=$daemonUrl click -s $sid 5") should { // ref 5 = submit
+        cli.umwelt("--api-base=$daemonUrl click -s $sid $submit") should {
             have(exitCode == 0)
             out sameAsJson """
                 {
@@ -269,7 +277,8 @@ class SessionSequenceTest {
             """.trimIndent()
         }
 
-        cli.umwelt("--api-base=$daemonUrl dump -s $sid") should {
+        val index = cli.umwelt("--api-base=$daemonUrl dump -s $sid")
+        index should {
             have(exitCode == 0)
             @Suppress("MarkdownUnresolvedFileReference")
             out sameAsMarkdown """
@@ -289,7 +298,7 @@ class SessionSequenceTest {
         }
 
         // click the ref, never the href it happens to show
-        cli.umwelt("--api-base=$daemonUrl click -s $sid 2") should {
+        cli.umwelt("--api-base=$daemonUrl click -s $sid ${index.out.linkRef("The Article")}") should {
             have(exitCode == 0)
             out sameAsJson """
                 {
@@ -345,13 +354,14 @@ class SessionSequenceTest {
     }
 
     @Test
-    fun `should refuse to go back from the first history entry`() = runTest {
+    fun `should refuse to step past either end of history`() = runTest {
 
         val sid = (cli.umwelt("--api-base=$daemonUrl session new") should { have(exitCode == 0) }).sessionId
         cli.umwelt("--api-base=$daemonUrl goto -s $sid $site/article.html") should { have(exitCode == 0) }
 
         // a boundary fails loudly rather than silently doing nothing, and the
-        // daemon's own `CannotGoBack` reaches the caller intact
+        // daemon's own `CannotGoBack` / `CannotGoForward` reaches the caller
+        // intact — the only page there is is both the first entry and the last
         cli.umwelt("--api-base=$daemonUrl back -s $sid") should {
             have(exitCode == 1)
             out sameAsJson """
@@ -362,6 +372,21 @@ class SessionSequenceTest {
                   "error": {
                     "type": "CannotGoBack",
                     "message": "already at the first history entry; cannot go back"
+                  }
+                }
+            """.trimIndent()
+        }
+
+        cli.umwelt("--api-base=$daemonUrl forward -s $sid") should {
+            have(exitCode == 1)
+            out sameAsJson """
+                {
+                  "type": "Error",
+                  "code": 1,
+                  "message": "already at the last history entry; cannot go forward",
+                  "error": {
+                    "type": "CannotGoForward",
+                    "message": "already at the last history entry; cannot go forward"
                   }
                 }
             """.trimIndent()
@@ -484,18 +509,19 @@ class SessionSequenceTest {
         // network at all, so it would test the blocklist rather than a refused
         // connection. Pinning the whole record is what surfaced that; the
         // substring check this replaced saw only `net::` and was happy.
-        cli.umwelt("--api-base=$daemonUrl goto -s $sid http://127.0.0.1:47811/") should {
+        val refused = FixtureSite.REFUSED_URL
+        cli.umwelt("--api-base=$daemonUrl goto -s $sid $refused") should {
             have(exitCode == 1)
             out sameAsJson """
                 {
                   "type": "Error",
                   "code": 1,
-                  "message": "could not load 'http://127.0.0.1:47811/': net::ERR_CONNECTION_REFUSED",
+                  "message": "could not load '$refused': net::ERR_CONNECTION_REFUSED",
                   "error": {
                     "type": "NavigationFailed",
-                    "url": "http://127.0.0.1:47811/",
+                    "url": "$refused",
                     "reason": "net::ERR_CONNECTION_REFUSED",
-                    "message": "could not load 'http://127.0.0.1:47811/': net::ERR_CONNECTION_REFUSED"
+                    "message": "could not load '$refused': net::ERR_CONNECTION_REFUSED"
                   }
                 }
             """.trimIndent()
@@ -584,14 +610,19 @@ class SessionSequenceTest {
         // SKILL.md names `status`, `reload` and `dump` as the three that fail
         // here with "the session has not navigated to any page yet" — `dump`
         // included, so an agent that forgot to `goto` is told it has no page
-        // rather than that the page is blank.
+        // rather than that the page is blank. All three, one after another, on
+        // the same session: none of them may leave it on a page either.
         cli.umwelt("--api-base=$daemonUrl dump -s $sid") should {
             have(exitCode == 1)
             out sameAsJson noCurrentPage
         }
 
-        // the same session, through the command that already gets it right
         cli.umwelt("--api-base=$daemonUrl status -s $sid") should {
+            have(exitCode == 1)
+            out sameAsJson noCurrentPage
+        }
+
+        cli.umwelt("--api-base=$daemonUrl reload -s $sid") should {
             have(exitCode == 1)
             out sameAsJson noCurrentPage
         }
@@ -627,7 +658,7 @@ class SessionSequenceTest {
             """.trimIndent()
         }
 
-        val ref = "1"
+        val ref = article.out.linkRef("the report as data")
 
         // no -o: the resource itself is the output, the way `dump` prints the
         // page. A CSV is text, so it lands in the caller's context as the text
@@ -761,12 +792,38 @@ class SessionSequenceTest {
         // each tab is still where its own sequence left it
         cli.umwelt("--api-base=$daemonUrl status -s ${first.sessionId}") should {
             have(exitCode == 0)
-            have("$site/article.html" in out)
+            out sameAsJson """
+                {
+                  "type": "Navigation",
+                  "navigation": {
+                    "url": "$site/article.html",
+                    "status": 200,
+                    "title": "The Article",
+                    "mimeType": "text/html",
+                    "type": "DOCUMENT",
+                    "canGoBack": false,
+                    "canGoForward": false
+                  }
+                }
+            """.trimIndent()
         }
 
         cli.umwelt("--api-base=$daemonUrl status -s ${second.sessionId}") should {
             have(exitCode == 0)
-            have("$site/search.html" in out)
+            out sameAsJson """
+                {
+                  "type": "Navigation",
+                  "navigation": {
+                    "url": "$site/search.html",
+                    "status": 200,
+                    "title": "Search",
+                    "mimeType": "text/html",
+                    "type": "DOCUMENT",
+                    "canGoBack": false,
+                    "canGoForward": false
+                  }
+                }
+            """.trimIndent()
         }
     }
 
@@ -829,6 +886,524 @@ class SessionSequenceTest {
                 {
                   "type": "SessionList",
                   "sessions": []
+                }
+            """.trimIndent()
+        }
+    }
+
+    /** The compose page as an agent perceives it, in the state its controls are in now. */
+    @Language("markdown")
+    @Suppress("HtmlUnknownAttribute")
+    private fun composePage(
+        body: String = "",
+        friendly: Boolean = false,
+    ) = """
+        ---
+        lang: en
+        title: Compose
+        status: 200
+        ---
+        
+        # Compose
+        
+        <form action="/results" method="get">
+        <textarea id="body" name="q" aria-label="message" ref="1">
+        BODY</textarea>
+        <select id="tone" name="kind" aria-label="tone" ref="2">
+        <option value="plain"${if (friendly) "" else " selected=\"\""} ref="3">
+        
+        Plain
+        
+        </option>
+        <option value="warm"${if (friendly) " selected=\"\"" else ""} ref="4">
+        
+        Friendly
+        
+        </option>
+        </select>
+        <button id="send" type="submit" ref="5">
+        
+        Send
+        
+        </button>
+        </form>
+        
+    """.trimIndent().replace(
+        // a filled textarea renders its text as a paragraph of its own, which
+        // trimIndent cannot be handed through an interpolation
+        "\nBODY</textarea>",
+        if (body.isEmpty()) "\n</textarea>" else "\n\n$body\n\n</textarea>"
+    )
+
+    /**
+     * The other half of the form story: a `<textarea>`, which is what a real
+     * search box or chat input is today, filled in the three ways `type`
+     * offers. kdriver's own `clearInput()` resolves the value setter of
+     * `HTMLInputElement` alone and throws `Illegal invocation` on a textarea —
+     * which surfaced as a `502` on the very first `type` — so replacing the
+     * text of a non-empty textarea is the case worth driving for real.
+     */
+    @Test
+    fun `should replace and append the text of a textarea and select an option by value`() = runTest {
+
+        val sid = (cli.umwelt("--api-base=$daemonUrl session new") should { have(exitCode == 0) }).sessionId
+        cli.umwelt("--api-base=$daemonUrl goto -s $sid $site/compose.html") should { have(exitCode == 0) }
+
+        val form = cli.umwelt("--api-base=$daemonUrl dump -s $sid")
+        form should {
+            have(exitCode == 0)
+            out sameAsMarkdown composePage()
+        }
+        val message = form.out.tagRef("aria-label=\"message\"")
+        val tone = form.out.tagRef("aria-label=\"tone\"")
+        val send = form.out.tagRef("id=\"send\"")
+
+        cli.umwelt("""--api-base=$daemonUrl type -s $sid $message "first draft"""") should {
+            have(exitCode == 0)
+            out sameAsJson """
+                {
+                  "type": "Typed",
+                  "ref": "$message"
+                }
+            """.trimIndent()
+        }
+
+        // `type` replaces by default: the field ends up holding exactly the
+        // new text, not the draft with the new text after it
+        cli.umwelt("""--api-base=$daemonUrl type -s $sid $message "final words"""") should {
+            have(exitCode == 0)
+            out sameAsJson """
+                {
+                  "type": "Typed",
+                  "ref": "$message"
+                }
+            """.trimIndent()
+        }
+
+        cli.umwelt("--api-base=$daemonUrl dump -s $sid") should {
+            have(exitCode == 0)
+            out sameAsMarkdown composePage(body = "final words")
+        }
+
+        // and `--append` inserts at the caret instead, which a replace left at
+        // the end of the text
+        cli.umwelt("""--api-base=$daemonUrl type -s $sid $message " and more" --append""") should {
+            have(exitCode == 0)
+            out sameAsJson """
+                {
+                  "type": "Typed",
+                  "ref": "$message"
+                }
+            """.trimIndent()
+        }
+
+        // `select` matches the visible label first and the value second: no
+        // option is labelled "warm", so this is the value of "Friendly"
+        cli.umwelt("--api-base=$daemonUrl select -s $sid $tone warm") should {
+            have(exitCode == 0)
+            out sameAsJson """
+                {
+                  "type": "Selected",
+                  "ref": "$tone"
+                }
+            """.trimIndent()
+        }
+
+        cli.umwelt("--api-base=$daemonUrl dump -s $sid") should {
+            have(exitCode == 0)
+            out sameAsMarkdown composePage(body = "final words and more", friendly = true)
+        }
+
+        // what the form submits is what the dump showed
+        cli.umwelt("--api-base=$daemonUrl click -s $sid $send") should {
+            have(exitCode == 0)
+            out sameAsJson """
+                {
+                  "type": "Navigation",
+                  "navigation": {
+                    "url": "$site/results?q=final+words+and+more&kind=warm",
+                    "status": 200,
+                    "title": "Results",
+                    "mimeType": "text/html",
+                    "type": "DOCUMENT",
+                    "canGoBack": true,
+                    "canGoForward": false
+                  }
+                }
+            """.trimIndent()
+        }
+    }
+
+    /**
+     * Each act on a ref can be refused for a reason of its own, and each reason
+     * arrives typed, carrying the ref — and, for an option, the option — so an
+     * agent branches on fields rather than on a sentence. All of them are exit
+     * `1`, not the stale-ref `4`: the ref is current, it is the act that does
+     * not fit the element, so re-dumping would not help.
+     */
+    @Test
+    fun `should refuse an act that does not fit the element behind the ref`() = runTest {
+
+        val sid = (cli.umwelt("--api-base=$daemonUrl session new") should { have(exitCode == 0) }).sessionId
+        cli.umwelt("--api-base=$daemonUrl goto -s $sid $site/compose.html") should { have(exitCode == 0) }
+
+        val form = cli.umwelt("--api-base=$daemonUrl dump -s $sid")
+        form should {
+            have(exitCode == 0)
+            out sameAsMarkdown composePage()
+        }
+        val message = form.out.tagRef("aria-label=\"message\"")
+        val tone = form.out.tagRef("aria-label=\"tone\"")
+        val send = form.out.tagRef("id=\"send\"")
+
+        cli.umwelt("""--api-base=$daemonUrl type -s $sid $send "hello"""") should {
+            have(exitCode == 1)
+            out sameAsJson """
+                {
+                  "type": "Error",
+                  "code": 1,
+                  "message": "element with ref '$send' is not a text-editable control",
+                  "error": {
+                    "type": "ReferenceNotEditable",
+                    "ref": "$send",
+                    "message": "element with ref '$send' is not a text-editable control"
+                  }
+                }
+            """.trimIndent()
+        }
+
+        cli.umwelt("--api-base=$daemonUrl select -s $sid $message Plain") should {
+            have(exitCode == 1)
+            out sameAsJson """
+                {
+                  "type": "Error",
+                  "code": 1,
+                  "message": "element with ref '$message' is not a <select>",
+                  "error": {
+                    "type": "ReferenceNotSelectable",
+                    "ref": "$message",
+                    "message": "element with ref '$message' is not a <select>"
+                  }
+                }
+            """.trimIndent()
+        }
+
+        // neither a label nor a value: the option the agent asked for is
+        // named back to it, so it can re-read the labels it was shown
+        cli.umwelt("--api-base=$daemonUrl select -s $sid $tone Loud") should {
+            have(exitCode == 1)
+            out sameAsJson """
+                {
+                  "type": "Error",
+                  "code": 1,
+                  "message": "<select> '$tone' has no option matching 'Loud'",
+                  "error": {
+                    "type": "OptionNotFound",
+                    "ref": "$tone",
+                    "option": "Loud",
+                    "message": "<select> '$tone' has no option matching 'Loud'"
+                  }
+                }
+            """.trimIndent()
+        }
+
+        // and nothing a refusal did reached the page
+        cli.umwelt("--api-base=$daemonUrl dump -s $sid") should {
+            have(exitCode == 0)
+            out sameAsMarkdown composePage()
+        }
+    }
+
+    /** The counter page after [clicks] presses of its button. */
+    @Language("markdown")
+    private fun counterPage(clicks: Int) =
+        @Suppress(
+            "MarkdownUnresolvedFileReference",
+            "WrsUnresolvedAnchorReference",
+            "HtmlUnknownAttribute",
+            "MarkdownUnresolvedHeaderReference"
+        )
+        """
+            ---
+            lang: en
+            title: Counter
+            status: 200
+            ---
+            
+            # Counter
+            
+            clicked $clicks times
+            
+            <button id="more" type="button" ref="1">
+            
+            More
+            
+            </button>
+            
+            [to the end](ref:2:#end)
+            
+            The end.
+            
+        """.trimIndent()
+
+    /**
+     * The other side of the stale-ref line: a page that changes **without**
+     * loading another document keeps every ref an agent read from it. A
+     * button that rewrites the page in place and a link to a fragment of it
+     * both leave the document where it was, so refs read before either stay
+     * actionable — which is what lets an agent press "load more" twice. Only
+     * a new document makes a ref stale, and a check that treated every click
+     * as one would fail exactly here.
+     *
+     * Also what `click` reports when nothing navigated: still a `Navigation`,
+     * with the `url` the agent already held (an in-place change), or the
+     * fragment's with `type` `WITHIN_DOCUMENT` (no document fetched).
+     */
+    @Test
+    fun `should keep refs across a change that loads no new document`() = runTest {
+
+        val sid = (cli.umwelt("--api-base=$daemonUrl session new") should { have(exitCode == 0) }).sessionId
+        cli.umwelt("--api-base=$daemonUrl goto -s $sid $site/counter.html") should { have(exitCode == 0) }
+
+        val counter = cli.umwelt("--api-base=$daemonUrl dump -s $sid")
+        counter should {
+            have(exitCode == 0)
+            out sameAsMarkdown counterPage(clicks = 0)
+        }
+        val more = counter.out.tagRef("id=\"more\"")
+        val toTheEnd = counter.out.linkRef("to the end")
+
+        val inPlace = """
+            {
+              "type": "Navigation",
+              "navigation": {
+                "url": "$site/counter.html",
+                "status": 200,
+                "title": "Counter",
+                "mimeType": "text/html",
+                "type": "DOCUMENT",
+                "canGoBack": false,
+                "canGoForward": false
+              }
+            }
+        """.trimIndent()
+
+        // the url is the one the agent already held: the page changed in place
+        cli.umwelt("--api-base=$daemonUrl click -s $sid $more") should {
+            have(exitCode == 0)
+            out sameAsJson inPlace
+        }
+
+        // the same ref again, with no dump in between: still the button
+        cli.umwelt("--api-base=$daemonUrl click -s $sid $more") should {
+            have(exitCode == 0)
+            out sameAsJson inPlace
+        }
+
+        // a fragment is a history entry of its own, with no fetch behind it
+        val atTheEnd = """
+            {
+              "type": "Navigation",
+              "navigation": {
+                "url": "$site/counter.html#end",
+                "status": 200,
+                "title": "Counter",
+                "mimeType": "text/html",
+                "type": "WITHIN_DOCUMENT",
+                "canGoBack": true,
+                "canGoForward": false
+              }
+            }
+        """.trimIndent()
+
+        cli.umwelt("--api-base=$daemonUrl click -s $sid $toTheEnd") should {
+            have(exitCode == 0)
+            out sameAsJson atTheEnd
+        }
+
+        // and the first dump's refs survive that too
+        cli.umwelt("--api-base=$daemonUrl click -s $sid $more") should {
+            have(exitCode == 0)
+            out sameAsJson atTheEnd
+        }
+
+        cli.umwelt("--api-base=$daemonUrl dump -s $sid") should {
+            have(exitCode == 0)
+            out sameAsMarkdown counterPage(clicks = 3)
+        }
+    }
+
+    @Test
+    fun `should reload the page and fetch it again`() = runTest {
+
+        // ephemeral, so the visit count starts from nothing whatever other
+        // sequences left in the persistent profile's cookie jar
+        val sid = (cli.umwelt("--api-base=$daemonUrl session new --ephemeral") should { have(exitCode == 0) }).sessionId
+        cli.umwelt("--api-base=$daemonUrl goto -s $sid $site/visits.html") should { have(exitCode == 0) }
+
+        cli.umwelt("--api-base=$daemonUrl dump -s $sid") should {
+            have(exitCode == 0)
+            out sameAsMarkdown visitsPage(1)
+        }
+
+        val visits = """
+            {
+              "type": "Navigation",
+              "navigation": {
+                "url": "$site/visits.html",
+                "status": 200,
+                "title": "Visits",
+                "mimeType": "text/html",
+                "type": "DOCUMENT",
+                "canGoBack": false,
+                "canGoForward": false
+              }
+            }
+        """.trimIndent()
+
+        // a reload replaces the entry it is on rather than adding one, and
+        // the origin really is asked again: the count moves on
+        cli.umwelt("--api-base=$daemonUrl reload -s $sid") should {
+            have(exitCode == 0)
+            out sameAsJson visits
+        }
+
+        cli.umwelt("--api-base=$daemonUrl dump -s $sid") should {
+            have(exitCode == 0)
+            out sameAsMarkdown visitsPage(2)
+        }
+
+        cli.umwelt("--api-base=$daemonUrl reload -s $sid --bypass-cache") should {
+            have(exitCode == 0)
+            out sameAsJson visits
+        }
+
+        cli.umwelt("--api-base=$daemonUrl dump -s $sid") should {
+            have(exitCode == 0)
+            out sameAsMarkdown visitsPage(3)
+        }
+    }
+
+    @Test
+    fun `should supply the scheme a goto target left out`() = runTest {
+
+        // the same rule `read` follows (see `ReadingSequenceTest`), applied
+        // before the session is even looked up: loopback becomes http
+        val sid = (cli.umwelt("--api-base=$daemonUrl session new") should { have(exitCode == 0) }).sessionId
+
+        cli.umwelt("--api-base=$daemonUrl goto -s $sid ${site.removePrefix("http://")}/article.html") should {
+            have(exitCode == 0)
+            out sameAsJson """
+                {
+                  "type": "Navigation",
+                  "navigation": {
+                    "url": "$site/article.html",
+                    "status": 200,
+                    "title": "The Article",
+                    "mimeType": "text/html",
+                    "type": "DOCUMENT",
+                    "canGoBack": false,
+                    "canGoForward": false
+                  }
+                }
+            """.trimIndent()
+        }
+    }
+
+    /**
+     * Unlike a navigation, a download has no partial result worth returning:
+     * a `404` page is a page, but a `404` *file* is not the file. So where
+     * `goto` settles on whatever came back, `download` fails — typed, with the
+     * browser's own reason as a field — and so does a ref with nothing behind
+     * it to fetch.
+     */
+    @Test
+    fun `should fail a download that brings back no file`() = runTest {
+
+        val sid = (cli.umwelt("--api-base=$daemonUrl session new") should { have(exitCode == 0) }).sessionId
+        cli.umwelt("--api-base=$daemonUrl goto -s $sid $site/compose.html") should { have(exitCode == 0) }
+
+        val form = cli.umwelt("--api-base=$daemonUrl dump -s $sid")
+        form should { have(exitCode == 0) }
+        val send = form.out.tagRef("id=\"send\"")
+
+        // a button carries neither an href nor a src
+        cli.umwelt("--api-base=$daemonUrl download -s $sid $send") should {
+            have(exitCode == 1)
+            out sameAsJson """
+                {
+                  "type": "Error",
+                  "code": 1,
+                  "message": "element with ref '$send' has no href or src to download",
+                  "error": {
+                    "type": "ReferenceNotDownloadable",
+                    "ref": "$send",
+                    "message": "element with ref '$send' has no href or src to download"
+                  }
+                }
+            """.trimIndent()
+        }
+
+        cli.umwelt("--api-base=$daemonUrl download -s $sid --url /no-such-page") should {
+            have(exitCode == 1)
+            out sameAsJson """
+                {
+                  "type": "Error",
+                  "code": 1,
+                  "message": "could not download '$site/no-such-page': HTTP 404",
+                  "error": {
+                    "type": "DownloadFailed",
+                    "url": "$site/no-such-page",
+                    "reason": "HTTP 404",
+                    "message": "could not download '$site/no-such-page': HTTP 404"
+                  }
+                }
+            """.trimIndent()
+        }
+
+        val refused = FixtureSite.REFUSED_URL
+        cli.umwelt("--api-base=$daemonUrl download -s $sid --url $refused") should {
+            have(exitCode == 1)
+            out sameAsJson """
+                {
+                  "type": "Error",
+                  "code": 1,
+                  "message": "could not download '$refused': net::ERR_CONNECTION_REFUSED",
+                  "error": {
+                    "type": "DownloadFailed",
+                    "url": "$refused",
+                    "reason": "net::ERR_CONNECTION_REFUSED",
+                    "message": "could not download '$refused': net::ERR_CONNECTION_REFUSED"
+                  }
+                }
+            """.trimIndent()
+        }
+
+        // and the tab stayed on the form through all three
+        cli.umwelt("--api-base=$daemonUrl dump -s $sid") should {
+            have(exitCode == 0)
+            out sameAsMarkdown composePage()
+        }
+    }
+
+    @Test
+    fun `should fail to close a session that does not exist`() = runTest {
+
+        // closing is not idempotent on purpose: an id that names nothing is a
+        // mistake worth reporting, not a no-op that hides a typo
+        val unknown = "3f2504e0-4f89-11d3-9a0c-0305e82c3301"
+        cli.umwelt("--api-base=$daemonUrl session close $unknown") should {
+            have(exitCode == 1)
+            out sameAsJson """
+                {
+                  "type": "Error",
+                  "code": 1,
+                  "message": "no session with id '$unknown'",
+                  "error": {
+                    "type": "SessionNotFound",
+                    "id": "$unknown",
+                    "message": "no session with id '$unknown'"
+                  }
                 }
             """.trimIndent()
         }

@@ -18,16 +18,15 @@
 
 package com.xemantic.umwelt.e2e
 
-import com.xemantic.kotlin.test.assert
 import com.xemantic.kotlin.test.have
 import com.xemantic.kotlin.test.sameAsJson
 import com.xemantic.kotlin.test.sameAsMarkdown
 import com.xemantic.kotlin.test.should
 import com.xemantic.umwelt.e2e.harness.UmweltCli
 import com.xemantic.umwelt.e2e.harness.UmweltUnderTest
+import com.xemantic.umwelt.e2e.harness.visitsPage
 import kotlinx.coroutines.test.runTest
 import kotlin.test.AfterTest
-import kotlin.test.Ignore
 import kotlin.test.Test
 
 /**
@@ -109,7 +108,7 @@ import kotlin.test.Test
  * layout by a daemon whose `/health` answers the network. Where to look is the
  * skill's to explain, not a command's to report.
  *
- * ## How a change takes effect: `down`, then `up`
+ * ## How a change takes effect: a restart
  *
  * There is **no `config reload`**. Profiles change rarely enough that stopping
  * the daemon and starting it again is the whole mechanism, and a reload
@@ -119,7 +118,16 @@ import kotlin.test.Test
  * every refusal would need to exist twice.
  *
  * The configuration is therefore read and validated **exactly once, at
- * startup**, and `umwelt up` is where an agent sees a refusal.
+ * startup**, and a daemon that refuses it does not start: the process exits
+ * with the error naming the file, which is where an agent sees a refusal.
+ *
+ * Nor is the restart itself a command. `umwelt` is a client that talks to an
+ * address and never manages a process; stopping and starting `umwelt-server`
+ * is ordinary process management, which the skill describes and an agent does
+ * with the shell, on the user's say-so. A `umwelt up`/`umwelt down`/`umwelt
+ * consent` trio was specified for it and dropped: each would wrap a one-off
+ * operation on the user's machine in a command — and consent in a config key —
+ * where asking the user in the conversation is both simpler and the point.
  *
  * The cost is worth stating, because an agent has to plan around it: a restart
  * closes every open session. Adding a profile in the middle of a task discards
@@ -153,13 +161,11 @@ import kotlin.test.Test
  * suite deliberately does not have: one daemon per process is what keeps it to
  * thirty seconds, and the unit of isolation is a session. They live in
  * `umwelt-server`'s `UmweltConfigTest`, over `loadUmweltConfig` against a temp
- * directory — no daemon, no browser, one refusal per test — and the part a
- * *caller* sees, `umwelt up` reporting an `InvalidConfiguration`, waits for the
- * injectable process launcher noted in `umwelt-cli`'s `CliPendingSpecTest`.
+ * directory — no daemon, no browser, one refusal per test.
  *
- * The very first sequence fails for an unrelated reason worth telling apart
- * while triaging: it names no deployment, so it really goes to
- * https://umwe.lt, which is not deployed.
+ * What a *hosted* listing must hold — at least one profile, exactly one
+ * default — is not here either: reaching it means naming no deployment, which
+ * is `DeploymentSequenceTest`'s subject, so it is asserted there.
  */
 class ProfileSequenceTest {
 
@@ -172,34 +178,6 @@ class ProfileSequenceTest {
         // sessions only: the profile list is fixed at startup, so no sequence
         // can disturb it
         cli.closeEverything(daemonUrl)
-    }
-
-    @Test
-    @Ignore
-    fun `should list the profiles of the hosted service by default`() = runTest {
-
-        // where the command goes with nothing supplied, which is the first
-        // umwelt anybody meets: `umwelt profiles` on a fresh install describes
-        // https://umwe.lt, not this machine. Everything below this point is
-        // about a deployment that had to be named to be reached at all, and
-        // this is the one sequence in the file that names none.
-        //
-        // FAILS TODAY: umwe.lt is not deployed, so this exits `3`
-        // (ExitCode.UNREACHABLE). What is asserted when it is up is the part
-        // that is umwelt's contract rather than umwe.lt's business: its
-        // profiles are its own and will change, but every umwelt has at least
-        // one profile and exactly one default — `Profiles` refuses to
-        // construct otherwise.
-        val hosted = cli.umwelt("profiles") should {
-            have(exitCode == 0)
-            have(type == "ProfileList")
-        }
-
-        // exactly one, counted rather than merely found: a listing that marked
-        // two defaults would leave an agent unable to say where an unnamed
-        // session lands, and would read as a success
-        assert(hosted.out.split(""""default": true""").size - 1 == 1)
-        assert(""""name": """ in hosted.out)
     }
 
     @Test
@@ -273,7 +251,23 @@ class ProfileSequenceTest {
 
         cli.umwelt("--api-base=$daemonUrl dump -s $sid") should {
             have(exitCode == 0)
-            have("Umwelt is the world" in out)
+            @Suppress("MarkdownUnresolvedFileReference")
+            out sameAsMarkdown """
+                ---
+                lang: en
+                title: The Article
+                status: 200
+                ---
+                
+                # The Article
+                
+                Umwelt is the world as an organism perceives it.
+                
+                [the report as data](ref:1:/report.csv)
+                
+                [download the table](ref:2:/attachment.csv)
+                
+            """.trimIndent()
         }
     }
 
@@ -432,20 +426,6 @@ class ProfileSequenceTest {
             """.trimIndent()
         }
     }
-
-    /** The whole dump of the visits fixture on its [n]-th visit. */
-    private fun visitsPage(n: Int): String = /* language=markdown */ """
-        ---
-        lang: en
-        title: Visits
-        status: 200
-        ---
-        
-        # Visits
-        
-        visit number $n
-        
-    """.trimIndent()
 
     /** The count the visits fixture printed, read out of its dump. */
     private fun String.visitCount(): Int =

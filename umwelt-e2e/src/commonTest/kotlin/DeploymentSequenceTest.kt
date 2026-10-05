@@ -124,10 +124,18 @@ class DeploymentSequenceTest {
         // environment, so this is the command as a user types it an hour after
         // installing: it goes to umwe.lt because there is nowhere else it could
         // have learned to go
-        cli.umwelt("profiles") should {
+        val hosted = cli.umwelt("profiles") should {
             have(exitCode == 0)
             have(type == "ProfileList")
         }
+
+        // its profiles are its own business and will change, so what is
+        // asserted is the part that is umwelt's contract: at least one
+        // profile, and exactly one default — counted rather than merely found,
+        // since a listing that marked two would leave an agent unable to say
+        // where an unnamed session lands, and would read as a success
+        assert(hosted.out.split(""""default": true""").size - 1 == 1)
+        assert(""""name": """ in hosted.out)
     }
 
     @Test
@@ -257,6 +265,42 @@ class DeploymentSequenceTest {
                     "type": "SessionNotFound",
                     "id": "$sid",
                     "message": "no session with id '$sid'"
+                  }
+                }
+            """.trimIndent()
+        }
+    }
+
+    /**
+     * `health` is what tells *an umwelt* apart from whatever else holds the
+     * port: the `service` marker is the daemon's own single-instance check,
+     * and the CLI refuses a body without it. Beside it, which browser this
+     * daemon drives — the executable and, once one is running, its version —
+     * so a user reads it here rather than guessing. Those two, and the
+     * timestamp, belong to the machine and the moment, so they are masked and
+     * the rest of the record is pinned.
+     */
+    @Test
+    fun `should confirm a genuine daemon at the address it was given`() = runTest {
+
+        // a page loaded first, so the default profile's browser is certainly
+        // up and the record carries its version: `health` itself must never
+        // launch one
+        val sid = (cli.umwelt("--api-base=$daemonUrl session new") should { have(exitCode == 0) }).sessionId
+        cli.umwelt("--api-base=$daemonUrl goto -s $sid $site/article.html") should { have(exitCode == 0) }
+
+        cli.umwelt("--api-base=$daemonUrl health") should {
+            have(exitCode == 0)
+            val machineSpecific = Regex(""""(timestamp|browser|browserVersion)": "[^"]+"""")
+            out.replace(machineSpecific) { """"${it.groupValues[1]}": "<${it.groupValues[1]}>"""" } sameAsJson """
+                {
+                  "type": "Health",
+                  "health": {
+                    "service": "umwelt",
+                    "status": "healthy",
+                    "timestamp": "<timestamp>",
+                    "browser": "<browser>",
+                    "browserVersion": "<browserVersion>"
                   }
                 }
             """.trimIndent()

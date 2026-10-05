@@ -315,4 +315,69 @@ class ReadingSequenceTest {
         }
     }
 
+    @Test
+    fun `should pass the query string of a target through untouched`() = runTest {
+
+        // the daemon reads the target back off the raw request URI, so the
+        // CLI has to put the target's own query there verbatim rather than
+        // encoding it as a parameter of the read: `&` and `=` must reach the
+        // origin as the separators they are
+        cli.umwelt("""--api-base=$daemonUrl read "$site/results?q=umwelt&kind=docs"""") should {
+            have(exitCode == 0)
+            @Suppress("MarkdownUnresolvedFileReference")
+            out sameAsMarkdown """
+                ---
+                lang: en
+                title: Results
+                status: 200
+                ---
+                
+                # Results
+                
+                query was umwelt
+                
+                kind was docs
+                
+                - [The Article](/article.html)
+                
+            """.trimIndent()
+        }
+    }
+
+    @Test
+    fun `should fail a read that loads no document and leave nothing running`() = runTest {
+
+        // no page behind the address at all, so unlike the 404 above this is
+        // a failure — the same typed one `goto` reports
+        val refused = FixtureSite.REFUSED_URL
+        cli.umwelt("--api-base=$daemonUrl read $refused") should {
+            have(exitCode == 1)
+            out sameAsJson """
+                {
+                  "type": "Error",
+                  "code": 1,
+                  "message": "could not load '$refused': net::ERR_CONNECTION_REFUSED",
+                  "error": {
+                    "type": "NavigationFailed",
+                    "url": "$refused",
+                    "reason": "net::ERR_CONNECTION_REFUSED",
+                    "message": "could not load '$refused': net::ERR_CONNECTION_REFUSED"
+                  }
+                }
+            """.trimIndent()
+        }
+
+        // and the throwaway tab opened for it was released on the failure
+        // path as well, not only once a body had been streamed
+        cli.umwelt("--api-base=$daemonUrl session list") should {
+            have(exitCode == 0)
+            out sameAsJson """
+                {
+                  "type": "SessionList",
+                  "sessions": []
+                }
+            """.trimIndent()
+        }
+    }
+
 }
