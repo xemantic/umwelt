@@ -180,10 +180,8 @@ class ReadingSequenceTest {
         // and `contentType` is what says "not a page", rather than a sentence
         // on a second stream saying the same thing in prose. `status` is the
         // origin's, the same field `FileDownloaded` carries for a file fetched
-        // through a session: the daemon already relays it in a header on this
-        // branch, and a record is the one place a `-o` caller can read it.
-        //
-        // FAILS TODAY: `FileRetrieved` has no `status` field.
+        // through a session: the daemon relays it in a header on this branch,
+        // and a record is the one place a `-o` caller can read it.
         cli.umwelt("""--api-base=$daemonUrl read $site/report.txt -o "$target"""") should {
             have(exitCode == 0)
             out sameAsJson """
@@ -208,12 +206,9 @@ class ReadingSequenceTest {
         val target = tempPath("umwelt-report", ".csv")
 
         // a content type Chrome downloads instead of displaying, which is what
-        // "a PDF, an archive" means in the skill.
-        //
-        // FAILS TODAY: SKILL.md promises the file, and the daemon aborts the
-        // navigation instead (net::ERR_ABORTED), because the anonymous read
-        // navigates a tab and downloads are denied on it. Either the read grows
-        // a non-navigating retrieval path, or the skill stops promising this.
+        // "a PDF, an archive" means in the skill. Chrome reports the
+        // navigation as aborted and announces a download beside it, which the
+        // daemon takes as its cue to stream the origin's bytes instead.
         cli.umwelt("""--api-base=$daemonUrl read $site/report.csv -o "$target"""") should {
             have(exitCode == 0)
             out sameAsJson """
@@ -233,6 +228,65 @@ class ReadingSequenceTest {
     }
 
     @Test
+    fun `should hand back a non page on stdout when no file is named`() = runTest {
+
+        // the same file with no `-o`: the payload is the output, so the CSV
+        // itself is stdout, as text since its type says it is text. Nothing
+        // rides beside it - no `FileRetrieved`, since there is no second
+        // stream for a record to go to - and nothing reaches the byte sink.
+        cli.umwelt("--api-base=$daemonUrl read $site/report.csv") should {
+            have(exitCode == 0)
+            out sameAs FixtureSite.REPORT_CSV
+            have(bytes.isEmpty())
+        }
+    }
+
+    @Test
+    fun `should hand back a binary on stdout as its own bytes`() = runTest {
+
+        // a type that is not text cannot go through the text sink, so with no
+        // `-o` it reaches stdout as the bytes it is: the byte stream carries
+        // the image verbatim, and the text stream carries nothing at all
+        cli.umwelt("--api-base=$daemonUrl read $site/logo.png") should {
+            have(exitCode == 0)
+            have(out.isEmpty())
+            have(bytes.contentEquals(FixtureSite.LOGO_PNG))
+        }
+    }
+
+    @Test
+    fun `should hand back a text non page without rewriting its line endings`() = runTest {
+
+        val target = tempPath("umwelt-report", ".txt")
+
+        // CRLF endings and no final newline: a copy made line by line would
+        // come back with LF endings and a newline the origin never sent, so a
+        // strict comparison is the whole assertion - on stdout and on disk
+        cli.umwelt("--api-base=$daemonUrl read $site/report-crlf.txt") should {
+            have(exitCode == 0)
+            have(out == FixtureSite.REPORT_CRLF)
+            have(bytes.isEmpty())
+        }
+
+        cli.umwelt("""--api-base=$daemonUrl read $site/report-crlf.txt -o "$target"""") should {
+            have(exitCode == 0)
+            out sameAsJson """
+                {
+                  "type": "FileRetrieved",
+                  "url": "$site/report-crlf.txt",
+                  "status": 200,
+                  "contentType": "text/plain; charset=UTF-8",
+                  "file": "$target",
+                  "bytes": ${FixtureSite.REPORT_CRLF.length}
+                }
+            """.trimIndent()
+        }
+        have(target.readText() == FixtureSite.REPORT_CRLF)
+
+        target.deleteIfExists()
+    }
+
+    @Test
     fun `should still return the page of a 404`() = runTest {
 
         // like a browser, umwelt settles on whatever came back: the content is
@@ -244,8 +298,6 @@ class ReadingSequenceTest {
         // only by reading the prose, and a 500 with a body, or a 200 that says
         // "not found" in words, is the same situation - no exit code covers
         // those, and a field every dump carries does.
-        //
-        // FAILS TODAY: the frontmatter carries `lang` and `title` only.
         cli.umwelt("--api-base=$daemonUrl read $site/no-such-page") should {
             have(exitCode == 0)
             out sameAsMarkdown """
