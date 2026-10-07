@@ -143,6 +143,7 @@ class SessionSequenceTest {
                   "navigation": {
                     "url": "$site/search.html",
                     "status": 200,
+                    "settled": true,
                     "title": "Search",
                     "mimeType": "text/html",
                     "type": "DOCUMENT",
@@ -206,6 +207,7 @@ class SessionSequenceTest {
                   "navigation": {
                     "url": "$site/results?q=umwelt&kind=docs",
                     "status": 200,
+                    "settled": true,
                     "title": "Results",
                     "mimeType": "text/html",
                     "type": "DOCUMENT",
@@ -267,6 +269,7 @@ class SessionSequenceTest {
                   "navigation": {
                     "url": "$site/",
                     "status": 200,
+                    "settled": true,
                     "title": "Fixture index",
                     "mimeType": "text/html",
                     "type": "DOCUMENT",
@@ -306,6 +309,7 @@ class SessionSequenceTest {
                   "navigation": {
                     "url": "$site/article.html",
                     "status": 200,
+                    "settled": true,
                     "title": "The Article",
                     "mimeType": "text/html",
                     "type": "DOCUMENT",
@@ -324,6 +328,7 @@ class SessionSequenceTest {
                   "navigation": {
                     "url": "$site/",
                     "status": 200,
+                    "settled": true,
                     "title": "Fixture index",
                     "mimeType": "text/html",
                     "type": "DOCUMENT",
@@ -342,6 +347,7 @@ class SessionSequenceTest {
                   "navigation": {
                     "url": "$site/article.html",
                     "status": 200,
+                    "settled": true,
                     "title": "The Article",
                     "mimeType": "text/html",
                     "type": "DOCUMENT",
@@ -408,6 +414,7 @@ class SessionSequenceTest {
                   "navigation": {
                     "url": "$site/no-such-page",
                     "status": 404,
+                    "settled": true,
                     "title": "Not found",
                     "mimeType": "text/html",
                     "type": "DOCUMENT",
@@ -448,8 +455,12 @@ class SessionSequenceTest {
      * gone through, which is what made it dangerous. It surfaced on a Wayback
      * Machine capture, whose toolbar assets can hang the same way.
      *
-     * Slower than the other sequences by the settle cap (15 s), since waiting
-     * the cap out is the behaviour under test.
+     * It is now also the one sequence that reports `"settled": false`: the page
+     * is there and dumpable, and the record says it was still busy when the
+     * call returned, instead of passing it off as a clean load.
+     *
+     * Slower than the other sequences by the default settle timeout (5 s),
+     * since waiting it out is the behaviour under test.
      */
     @Test
     fun `should settle on a page that never finishes loading`() = runTest {
@@ -464,6 +475,7 @@ class SessionSequenceTest {
                   "navigation": {
                     "url": "$site/stalled.html",
                     "status": 200,
+                    "settled": false,
                     "title": "Stalled",
                     "mimeType": "text/html",
                     "type": "DOCUMENT",
@@ -703,6 +715,7 @@ class SessionSequenceTest {
                   "navigation": {
                     "url": "$site/article.html",
                     "status": 200,
+                    "settled": true,
                     "title": "The Article",
                     "mimeType": "text/html",
                     "type": "DOCUMENT",
@@ -798,6 +811,7 @@ class SessionSequenceTest {
                   "navigation": {
                     "url": "$site/article.html",
                     "status": 200,
+                    "settled": true,
                     "title": "The Article",
                     "mimeType": "text/html",
                     "type": "DOCUMENT",
@@ -816,6 +830,7 @@ class SessionSequenceTest {
                   "navigation": {
                     "url": "$site/search.html",
                     "status": 200,
+                    "settled": true,
                     "title": "Search",
                     "mimeType": "text/html",
                     "type": "DOCUMENT",
@@ -1023,6 +1038,7 @@ class SessionSequenceTest {
                   "navigation": {
                     "url": "$site/results?q=final+words+and+more&kind=warm",
                     "status": 200,
+                    "settled": true,
                     "title": "Results",
                     "mimeType": "text/html",
                     "type": "DOCUMENT",
@@ -1236,6 +1252,7 @@ class SessionSequenceTest {
               "navigation": {
                 "url": "$site/counter.html",
                 "status": 200,
+                "settled": true,
                 "title": "Counter",
                 "mimeType": "text/html",
                 "type": "DOCUMENT",
@@ -1264,6 +1281,7 @@ class SessionSequenceTest {
               "navigation": {
                 "url": "$site/counter.html#end",
                 "status": 200,
+                "settled": true,
                 "title": "Counter",
                 "mimeType": "text/html",
                 "type": "WITHIN_DOCUMENT",
@@ -1309,6 +1327,7 @@ class SessionSequenceTest {
               "navigation": {
                 "url": "$site/visits.html",
                 "status": 200,
+                "settled": true,
                 "title": "Visits",
                 "mimeType": "text/html",
                 "type": "DOCUMENT",
@@ -1356,6 +1375,7 @@ class SessionSequenceTest {
                   "navigation": {
                     "url": "$site/article.html",
                     "status": 200,
+                    "settled": true,
                     "title": "The Article",
                     "mimeType": "text/html",
                     "type": "DOCUMENT",

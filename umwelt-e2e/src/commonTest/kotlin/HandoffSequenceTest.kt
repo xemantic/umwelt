@@ -173,6 +173,7 @@ class HandoffSequenceTest {
                   "navigation": {
                     "url": "$site/article.html",
                     "status": 200,
+                    "settled": true,
                     "title": "The Article",
                     "mimeType": "text/html",
                     "type": "DOCUMENT",
