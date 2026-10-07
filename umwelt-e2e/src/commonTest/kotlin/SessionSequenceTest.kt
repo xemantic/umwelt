@@ -1035,6 +1035,63 @@ class SessionSequenceTest {
     }
 
     /**
+     * `type` fills the field its ref names, and no other — even on a page that
+     * moves the focus on by itself while the keys are arriving, as every
+     * segmented date picker does once a segment is full. Keys go to whatever
+     * has focus, so text typed after the move used to spill into the next
+     * segment: on bahn.de, `07` typed into the day turned the date into
+     * `31.07.`, a month nobody asked for. What does not fit the named field
+     * is refused by the field, the way a person's typing is, and the field
+     * the page moved on to is left as it was.
+     */
+    @Test
+    fun `should type into the field the ref names even when the page moves the focus on`() = runTest {
+
+        val sid = (cli.umwelt("--api-base=$daemonUrl session new") should { have(exitCode == 0) }).sessionId
+        cli.umwelt("--api-base=$daemonUrl goto -s $sid $site/date.html") should { have(exitCode == 0) }
+
+        val form = cli.umwelt("--api-base=$daemonUrl dump -s $sid")
+        form should {
+            have(exitCode == 0)
+            out sameAsMarkdown datePage()
+        }
+        val day = form.out.tagRef("aria-label=\"day\"")
+
+        cli.umwelt("--api-base=$daemonUrl type -s $sid $day 0712") should {
+            have(exitCode == 0)
+            out sameAsJson """
+                {
+                  "type": "Typed",
+                  "ref": "$day"
+                }
+            """.trimIndent()
+        }
+
+        cli.umwelt("--api-base=$daemonUrl dump -s $sid") should {
+            have(exitCode == 0)
+            out sameAsMarkdown datePage(day = "07")
+        }
+    }
+
+    private fun datePage(
+        day: String? = null,
+    ) = """
+        ---
+        lang: en
+        title: Date
+        status: 200
+        ---
+
+        # Date
+
+        <form>
+        <input id="day"${if (day != null) " value=\"$day\"" else ""} aria-label="day" ref="1">
+        <input id="month" aria-label="month" ref="2">
+        </form>
+
+    """.trimIndent()
+
+    /**
      * Each act on a ref can be refused for a reason of its own, and each reason
      * arrives typed, carrying the ref — and, for an option, the option — so an
      * agent branches on fields rather than on a sentence. All of them are exit
