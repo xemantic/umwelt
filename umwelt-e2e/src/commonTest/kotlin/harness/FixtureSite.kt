@@ -171,6 +171,30 @@ class FixtureSite {
                 )
             }
 
+            // a segmented date field, the shape of every masked date picker: a
+            // segment that is full moves focus on to the next one by itself, so
+            // keystrokes sent after that land wherever the page put the focus
+            get("/date.html") {
+                call.respondText(
+                    page(
+                        title = "Date",
+                        body = """
+                            <h1>Date</h1>
+                            <form>
+                              <input id="day" maxlength="2" aria-label="day">
+                              <input id="month" maxlength="2" aria-label="month">
+                            </form>
+                            <script>
+                              document.getElementById('day').addEventListener('input', function (event) {
+                                if (event.target.value.length === 2) document.getElementById('month').focus();
+                              });
+                            </script>
+                        """.trimIndent()
+                    ),
+                    ContentType.Text.Html
+                )
+            }
+
             // a page that changes without loading another document: a button
             // that rewrites a paragraph in place, and a link to a fragment of
             // the same page. Neither replaces the document, so neither may
@@ -241,6 +265,27 @@ class FixtureSite {
                         .toString()
                 )
                 call.respondText(REPORT_CSV, ContentType.Text.CSV)
+            }
+
+            // a contact form with three plain text fields: the case `fill` was
+            // built for — a batch of type operations that needs no re-dump
+            // between them because plain-text inputs do not change the DOM
+            get("/contact.html") {
+                call.respondText(
+                    page(
+                        title = "Contact",
+                        body = """
+                            <h1>Contact</h1>
+                            <form action="/results" method="get">
+                              <input id="first" type="text" name="first" aria-label="first name">
+                              <input id="last" type="text" name="last" aria-label="last name">
+                              <input id="email" type="email" name="email" aria-label="email">
+                              <input type="submit" value="Submit">
+                            </form>
+                        """.trimIndent()
+                    ),
+                    ContentType.Text.Html
+                )
             }
 
             // a page whose readyState never reaches `complete`: the image it
